@@ -343,6 +343,17 @@ func (m *MachineScope) IsEKSManaged() bool {
 	return m.InfraCluster.InfraCluster().GetObjectKind().GroupVersionKind().Kind == "AWSManagedControlPlane"
 }
 
+func (m *MachineScope) IsExternallyManaged() bool {
+	annotations := m.InfraCluster.InfraCluster().GetAnnotations()
+	if annotations == nil {
+		return false
+	}
+
+	_, ok := annotations["cluster.x-k8s.io/managed-by"]
+
+	return ok
+}
+
 // SetInterruptible sets the AWSMachine status Interruptible
 func (m *MachineScope) SetInterruptible() {
 	if m.AWSMachine.Spec.SpotMarketOptions != nil {

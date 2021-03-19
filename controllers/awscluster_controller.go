@@ -20,16 +20,20 @@ import (
 	"context"
 	"net"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
-
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha3"
 	"sigs.k8s.io/cluster-api/util"
 	"sigs.k8s.io/cluster-api/util/conditions"
+	"sigs.k8s.io/cluster-api/util/predicates"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -263,26 +267,7 @@ func (r *AWSClusterReconciler) SetupWithManager(mgr ctrl.Manager, options contro
 		For(&infrav1.AWSCluster{}).
 		WithEventFilter(PausedPredicates(r.Log)).
 		WithEventFilter(
-			predicate.Funcs{
-				// Avoid reconciling if the event triggering the reconciliation is related to incremental status updates
-				// for AWSCluster resources only
-				UpdateFunc: func(e event.UpdateEvent) bool {
-					if e.ObjectOld.GetObjectKind().GroupVersionKind().Kind != "AWSCluster" {
-						return true
-					}
-
-					oldCluster := e.ObjectOld.(*infrav1.AWSCluster).DeepCopy()
-					newCluster := e.ObjectNew.(*infrav1.AWSCluster).DeepCopy()
-
-					oldCluster.Status = infrav1.AWSClusterStatus{}
-					newCluster.Status = infrav1.AWSClusterStatus{}
-
-					oldCluster.ObjectMeta.ResourceVersion = ""
-					newCluster.ObjectMeta.ResourceVersion = ""
-
-					return !reflect.DeepEqual(oldCluster, newCluster)
-				},
-			},
+			predicates.All(r.Log, ResourceNotExternallyManaged(r.Log), StatusUpdatePredicate()),
 		).
 		Build(r)
 	if err != nil {
@@ -361,6 +346,74 @@ func (r *AWSClusterReconciler) requeueAWSClusterForUnpausedCluster(o handler.Map
 	return []ctrl.Request{
 		{
 			NamespacedName: client.ObjectKey{Namespace: c.Namespace, Name: c.Spec.InfrastructureRef.Name},
+		},
+	}
+}
+
+const ExternallyManagedAnnotation = "cluster.x-k8s.io/managed-by"
+
+// HasExternallyManagedAnnotation returns true if the object has the `managed-by` annotation.
+func HasExternallyManagedAnnotation(o metav1.Object) bool {
+	return hasAnnotation(o, ExternallyManagedAnnotation)
+}
+
+// hasAnnotation returns true if the object has the specified annotation
+func hasAnnotation(o metav1.Object, annotation string) bool {
+	annotations := o.GetAnnotations()
+	if annotations == nil {
+		return false
+	}
+	_, ok := annotations[annotation]
+	return ok
+}
+
+func ResourceNotExternallyManaged(logger logr.Logger) predicate.Funcs {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return processIfNotExternallyManaged(logger.WithValues("predicate", "updateEvent"), e.ObjectNew, e.MetaNew)
+		},
+		CreateFunc: func(e event.CreateEvent) bool {
+			return processIfNotExternallyManaged(logger.WithValues("predicate", "createEvent"), e.Object, e.Meta)
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			return processIfNotExternallyManaged(logger.WithValues("predicate", "deleteEvent"), e.Object, e.Meta)
+		},
+		GenericFunc: func(e event.GenericEvent) bool {
+			return processIfNotExternallyManaged(logger.WithValues("predicate", "genericEvent"), e.Object, e.Meta)
+		},
+	}
+}
+
+func processIfNotExternallyManaged(logger logr.Logger, obj runtime.Object, meta v1.Object) bool {
+	kind := strings.ToLower(obj.GetObjectKind().GroupVersionKind().Kind)
+	log := logger.WithValues("namespace", meta.GetNamespace(), kind, meta.GetName())
+	if HasExternallyManagedAnnotation(meta) {
+		log.V(4).Info("Resource is externally managed, will not attempt to map resource")
+		return false
+	}
+	log.V(4).Info("Resource is managed, will attempt to map resource")
+	return true
+}
+
+func StatusUpdatePredicate() predicate.Funcs {
+	return predicate.Funcs{
+		// Avoid reconciling if the event triggering the reconciliation is related to incremental status updates
+		// for AWSCluster resources only
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			if e.ObjectOld.GetObjectKind().GroupVersionKind().Kind != "AWSCluster" {
+				return true
+			}
+
+			oldCluster := e.ObjectOld.(*infrav1.AWSCluster).DeepCopy()
+			newCluster := e.ObjectNew.(*infrav1.AWSCluster).DeepCopy()
+
+			oldCluster.Status = infrav1.AWSClusterStatus{}
+			newCluster.Status = infrav1.AWSClusterStatus{}
+
+			oldCluster.ObjectMeta.ResourceVersion = ""
+			newCluster.ObjectMeta.ResourceVersion = ""
+
+			return !reflect.DeepEqual(oldCluster, newCluster)
 		},
 	}
 }
