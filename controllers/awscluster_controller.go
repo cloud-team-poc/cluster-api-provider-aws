@@ -71,6 +71,9 @@ func (r *AWSClusterReconciler) Reconcile(req ctrl.Request) (_ ctrl.Result, reter
 	ctx := context.TODO()
 	log := r.Log.WithValues("namespace", req.Namespace, "awsCluster", req.Name)
 
+	// todo: remove
+	return reconcile.Result{}, nil
+
 	// Fetch the AWSCluster instance
 	awsCluster := &infrav1.AWSCluster{}
 	err := r.Get(ctx, req.NamespacedName, awsCluster)
